@@ -1,0 +1,241 @@
+---
+title: "XGBoost - Régression du PRS (true_prs) à partir des SNP"
+format: html
+---
+
+# XGBOOST - RÉGRESSION
+# Y = true_prs (quantitatif)
+# X = 100 SNP codés 0/1/2
+
+```{r}
+# ==========================================================
+# 1. PACKAGES
+# ==========================================================
+
+# À faire une seule fois si nécessaire :
+# install.packages(c("xgboost", "caret"))
+
+library(xgboost)
+library(caret)
+```
+
+
+```{r}
+# ==========================================================
+# 2. CHARGER LES DONNÉES
+# ==========================================================
+setwd("C:/Users/jerem/OneDrive/Documents/Cours_Simulation/TD")
+data <- read.csv("data_complet.csv")
+
+dim(data)
+str(data[, 1:6])
+summary(data$true_prs)
+sum(is.na(data))
+```
+
+
+```{r}
+# ==========================================================
+# 3. PRÉPARATION DES DONNÉES
+# ==========================================================
+
+# - Y = true_prs
+# - X = les 100 SNP (numériques 0/1/2)
+# - On retire ID (identifiant) ET phenotype :
+#   phenotype est en partie une conséquence du PRS, le garder
+#   comme prédicteur serait une fuite d'information.
+
+y <- data$true_prs
+
+X <- data[, setdiff(names(data), c("ID", "true_prs", "phenotype"))]
+X <- as.matrix(X)
+storage.mode(X) <- "numeric"
+
+dim(X)
+summary(y)
+```
+
+
+```{r}
+# ==========================================================
+# 4. TRAIN / TEST
+# ==========================================================
+
+set.seed(123)
+
+train_id <- createDataPartition(
+  y,
+  p = 0.80,
+  list = FALSE
+)
+
+X_train <- X[train_id, ]
+X_test  <- X[-train_id, ]
+
+y_train <- y[train_id]
+y_test  <- y[-train_id]
+
+dim(X_train)
+dim(X_test)
+```
+
+
+```{r}
+# ==========================================================
+# 5. MATRICES XGBOOST
+# ==========================================================
+
+dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+dtest  <- xgb.DMatrix(data = X_test,  label = y_test)
+```
+
+
+```{r}
+# ==========================================================
+# 6. XGBOOST - NOMBRE D'ARBRES PAR VALIDATION CROISÉE
+# ==========================================================
+
+params <- list(
+  objective        = "reg:squarederror",
+  eval_metric      = "rmse",
+  max_depth        = 3,
+  eta              = 0.05,
+  subsample        = 0.8,
+  colsample_bytree = 0.8
+)
+
+set.seed(123)
+cv <- xgb.cv(
+  params                = params,
+  data                  = dtrain,
+  nrounds               = 2000,
+  nfold                 = 5,
+  early_stopping_rounds = 30,
+  verbose               = 0
+)
+
+best_nrounds <- cv$early_stop$best_iteration
+best_nrounds
+```
+
+
+```{r}
+# ==========================================================
+# 7. MODÈLE FINAL
+# ==========================================================
+
+set.seed(123)
+
+model_xgb <- xgb.train(
+  params  = params,
+  data    = dtrain,
+  nrounds = best_nrounds,
+  verbose = 0
+)
+
+model_xgb
+```
+
+
+```{r}
+# ==========================================================
+# 8. PRÉDICTION
+# ==========================================================
+
+y_pred <- predict(model_xgb, dtest)
+
+head(y_pred)
+```
+
+
+```{r}
+# ==========================================================
+# 9. RMSE / MAE / R²
+# ==========================================================
+
+RMSE <- sqrt(mean((y_test - y_pred)^2))
+
+MAE <- mean(abs(y_test - y_pred))
+
+R2 <- 1 - (
+  sum((y_test - y_pred)^2) /
+  sum((y_test - mean(y_test))^2)
+)
+
+performance <- data.frame(
+  RMSE = RMSE,
+  MAE = MAE,
+  R2 = R2
+)
+
+performance
+```
+
+
+```{r}
+# ==========================================================
+# 10. OBSERVÉ VS PRÉDIT
+# ==========================================================
+
+plot(
+  y_test,
+  y_pred,
+  xlab = "PRS observé",
+  ylab = "PRS prédit",
+  main = "XGBoost - Observé vs Prédit"
+)
+
+abline(a = 0, b = 1)
+```
+
+
+```{r}
+# ==========================================================
+# 11. COMPARAISON AVEC UNE RÉGRESSION LINÉAIRE
+# ==========================================================
+# Un PRS est en général une somme pondérée de SNP : un modèle
+# linéaire est donc un point de comparaison très pertinent.
+# Si lm fait aussi bien (ou mieux) qu'XGBoost, c'est normal.
+
+df_train <- data.frame(y = y_train, X_train)
+df_test  <- data.frame(X_test)
+
+model_lm <- lm(y ~ ., data = df_train)
+pred_lm  <- predict(model_lm, newdata = df_test)
+
+perf_lm <- data.frame(
+  Modele = c("XGBoost", "Régression linéaire"),
+  RMSE = c(RMSE, sqrt(mean((y_test - pred_lm)^2))),
+  MAE  = c(MAE,  mean(abs(y_test - pred_lm))),
+  R2   = c(R2,   1 - sum((y_test - pred_lm)^2) /
+                     sum((y_test - mean(y_test))^2))
+)
+
+perf_lm
+```
+
+
+```{r}
+# ==========================================================
+# 12. VARIABLE IMPORTANCE
+# ==========================================================
+
+importance_xgb <- xgb.importance(
+  feature_names = colnames(X_train),
+  model = model_xgb
+)
+
+head(importance_xgb, 20)
+```
+
+
+```{r}
+# ==========================================================
+# 13. GRAPHIQUE IMPORTANCE (top 20 SNP)
+# ==========================================================
+
+xgb.plot.importance(
+  importance_matrix = importance_xgb,
+  top_n = 20
+)
+```

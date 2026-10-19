@@ -1,0 +1,247 @@
+---
+title: "XGBoost - Classification binaire du phénotype (SNP)"
+format: html
+---
+
+# XGBOOST - CLASSIFICATION
+# Y = phenotype (0/1)
+# X = 100 SNP codés 0/1/2 (nombre d'allèles de risque)
+
+```{r}
+# ==========================================================
+# 1. PACKAGES
+# ==========================================================
+
+# À faire une seule fois si nécessaire :
+# install.packages(c("xgboost", "caret", "pROC"))
+
+library(xgboost)
+library(caret)
+library(pROC)
+```
+
+
+```{r}
+# ==========================================================
+# 2. CHARGER LES DONNÉES
+# ==========================================================
+
+setwd("C:/Users/jerem/OneDrive/Documents/Cours_Simulation/TD")
+
+data <- read.csv("data_complet.csv")
+
+dim(data)          # 2000 lignes, 103 colonnes
+str(data[, 1:6])
+table(data$phenotype)
+summary(data$true_prs)
+
+# Valeurs manquantes (il n'y en a pas dans ce fichier)
+sum(is.na(data))
+```
+
+
+```{r}
+# ==========================================================
+# 3. PRÉPARATION DES DONNÉES
+# ==========================================================
+
+# - ID : simple identifiant -> retiré
+# - true_prs : score de risque polygénique "vrai", qui résume les SNP
+#   et est lié au phénotype -> retiré des prédicteurs pour éviter
+#   une fuite d'information (on veut prédire à partir des SNP seuls)
+# - SNP : gardés NUMÉRIQUES (0/1/2 = dosage allélique).
+#   Ne PAS les transformer en facteurs : XGBoost gère très bien
+#   le codage additif 0/1/2 et on garde 100 colonnes au lieu de 200.
+
+y <- data$phenotype                      # 0 / 1
+
+X <- data[, setdiff(names(data), c("ID", "true_prs", "phenotype"))]
+X <- as.matrix(X)
+storage.mode(X) <- "numeric"
+
+dim(X)                                   # 2000 x 100
+table(y)
+prop.table(table(y))                     # 75 % / 25 % : classes déséquilibrées
+```
+
+
+```{r}
+# ==========================================================
+# 4. TRAIN / TEST (stratifié sur le phénotype)
+# ==========================================================
+
+set.seed(123)
+
+train_id <- createDataPartition(
+  factor(y),
+  p = 0.80,
+  list = FALSE
+)
+
+X_train <- X[train_id, ]
+X_test  <- X[-train_id, ]
+
+y_train <- y[train_id]
+y_test  <- y[-train_id]
+
+dim(X_train)
+dim(X_test)
+
+prop.table(table(y_train))
+prop.table(table(y_test))
+```
+
+
+```{r}
+# ==========================================================
+# 5. MATRICES XGBOOST
+# ==========================================================
+
+dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+dtest  <- xgb.DMatrix(data = X_test,  label = y_test)
+
+# Pondération pour le déséquilibre (négatifs / positifs)
+spw <- sum(y_train == 0) / sum(y_train == 1)
+spw
+```
+
+
+```{r}
+# ==========================================================
+# 6. XGBOOST - CLASSIFICATION BINAIRE
+# ==========================================================
+
+params <- list(
+  objective        = "binary:logistic",
+  eval_metric      = "auc",
+  max_depth        = 3,      # arbres peu profonds : effets SNP surtout additifs
+  eta              = 0.05,
+  subsample        = 0.8,
+  colsample_bytree = 0.8,
+  min_child_weight = 5,
+  scale_pos_weight = spw     # retirer cette ligne si tu préfères ne pas pondérer
+)
+
+# Nombre optimal d'arbres par validation croisée (sur le train uniquement)
+set.seed(123)
+cv <- xgb.cv(
+  params                = params,
+  data                  = dtrain,
+  nrounds               = 1000,
+  nfold                 = 5,
+  stratified            = TRUE,
+  early_stopping_rounds = 30,
+  verbose               = 0
+)
+
+best_nrounds <- cv$early_stop$best_iteration
+best_nrounds
+```
+
+
+```{r}
+# ==========================================================
+# 7. MODÈLE FINAL
+# ==========================================================
+
+set.seed(123)
+
+model_xgb <- xgb.train(
+  params  = params,
+  data    = dtrain,
+  nrounds = best_nrounds,
+  verbose = 0
+)
+
+model_xgb
+```
+
+
+```{r}
+# ==========================================================
+# 8. PRÉDICTION
+# ==========================================================
+
+prob_pred  <- predict(model_xgb, dtest)           # probabilité P(phenotype = 1)
+class_pred <- ifelse(prob_pred > 0.5, 1, 0)
+
+head(prob_pred)
+```
+
+
+```{r}
+# ==========================================================
+# 9. PERFORMANCES
+# ==========================================================
+
+# AUC
+roc_obj <- roc(y_test, prob_pred, quiet = TRUE)
+AUC <- as.numeric(auc(roc_obj))
+
+# Matrice de confusion
+cm <- confusionMatrix(
+  factor(class_pred, levels = c(0, 1)),
+  factor(y_test,     levels = c(0, 1)),
+  positive = "1"
+)
+cm
+
+performance <- data.frame(
+  AUC         = AUC,
+  Accuracy    = unname(cm$overall["Accuracy"]),
+  Sensibilite = unname(cm$byClass["Sensitivity"]),
+  Specificite = unname(cm$byClass["Specificity"])
+)
+performance
+```
+
+
+```{r}
+# ==========================================================
+# 10. COURBE ROC
+# ==========================================================
+
+plot(
+  roc_obj,
+  main = paste0("XGBoost - Courbe ROC (AUC = ", round(AUC, 3), ")")
+)
+```
+
+
+```{r}
+# ==========================================================
+# 11. VARIABLE IMPORTANCE
+# ==========================================================
+
+importance_xgb <- xgb.importance(
+  feature_names = colnames(X_train),
+  model = model_xgb
+)
+
+head(importance_xgb, 20)
+```
+
+
+```{r}
+# ==========================================================
+# 12. GRAPHIQUE IMPORTANCE (top 20 SNP)
+# ==========================================================
+
+xgb.plot.importance(
+  importance_matrix = importance_xgb,
+  top_n = 20
+)
+```
+
+
+```{r}
+# ==========================================================
+# 13. (OPTIONNEL) Y QUANTITATIF = true_prs
+# ==========================================================
+# Si tu veux plutôt prédire le score true_prs (régression comme dans
+# ton script d'origine), remplace :
+#   y <- data$true_prs
+#   params : objective = "reg:squarederror", eval_metric = "rmse"
+#   (retirer scale_pos_weight)
+# et garde les mêmes X (SNP uniquement).
+```
