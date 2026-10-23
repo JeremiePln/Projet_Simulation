@@ -1,0 +1,9 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs9630991-A	7E-9	-	NR	0.851	-	[0.8-0.91]	NEMP2-DT	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011097	2:190567413	33536424	"Wang YF"
+rs12148050-G	1E-6	-	NR	0.869	-	[0.81-0.93]	TRAF3	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011097	14:102797451	33536424	"Wang YF"
+rs9899849-A	1E-8	-	NR	1.209	-	[1.14-1.27]	ACAP1,NEURL4	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011097	17:7331664	33536424	"Wang YF"
+rs13344313-A	2E-6	-	NR	0.862	-	[0.8-0.92]	SSBP4,LRRC25	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011097	19:18406957	33536424	"Wang YF"
+rs10419308-A	2E-7	-	NR	0.827	-	[0.75-0.9]	TMEM86B	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011097	19:55228445	33536424	"Wang YF"
+rs3795310-T	8E-6	-	NR	0.882	-	[0.83-0.94]	RERE	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011097	1:8371547	33536424	"Wang YF"
+rs28411034-A	6E-6	-	NR	0.866	-	[0.8-0.93]	MTF1	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011097	1:37811325	33536424	"Wang YF"
+rs6702599-C	2E-8	-	NR	0.821	-	[0.75-0.89]	IL12RB2	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011097	1:67359716	33536424	"Wang YF"
