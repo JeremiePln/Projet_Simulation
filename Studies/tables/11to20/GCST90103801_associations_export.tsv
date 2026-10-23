@@ -1,0 +1,6 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs17849502-T	3E-17	-	0.04	2.62	-	[1.37-5.02]	NCF2,SMG7	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST90103801	1:183563445	35167971	"Leffers HCB"
+rs7574865-T	2E-12	-	0.22	1.69	-	[1.15-2.5]	STAT4	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST90103801	2:191099907	35167971	"Leffers HCB"
+rs4728142-A	3E-11	-	0.44	1.59	-	[1.12-2.26]	IRF5	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST90103801	7:128933913	35167971	"Leffers HCB"
+rs13239597-A	4E-14	-	0.12	1.91	-	[1.2-3.03]	TPI1P2	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST90103801	7:129055929	35167971	"Leffers HCB"
+rs11860650-T	9E-9	-	0.13	1.66	-	[1.1-2.5]	ITGAM	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST90103801	16:31315385	35167971	"Leffers HCB"

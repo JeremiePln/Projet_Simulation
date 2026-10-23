@@ -1,0 +1,4 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs4807205-G	3E-6	-	0.467	1.14	-	[1.09-1.19]	DOT1L	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011492	19:2167879	33493351	"Song Q"
+rs11755393-A	2E-6	-	0.65	0.87	-	[0.81-0.93]	BLTP3A	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011492	6:34856859	33493351	"Song Q"
+rs12153670-G	2E-6	-	0.314	1.15	-	[1.09-1.21]	ST8SIA4	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST011492	5:100836660	33493351	"Song Q"

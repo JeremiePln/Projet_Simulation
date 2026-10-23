@@ -1,0 +1,6 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs1780813-?	4E-8	-	NR	1.8181818	-	[1.27-3.23]	SMYD3	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST005831	1:246280780	29848360	"Julià A"
+rs55849330-A	5E-8	-	NR	1.16	-	[1.11-1.21]	ST8SIA4	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST005831	5:100848943	29848360	"Julià A"
+rs150518861-A	4E-8	-	NR	1.66	-	[1.49-1.84]	EIF4H,LIMK1	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST005831	7:74152347	29848360	"Julià A"
+rs114038709-T	4E-8	-	NR	1.16	-	[1.11-1.22]	RNA5SP443,ARHGAP27	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST005831	17:45379362	29848360	"Julià A"
+rs36023980-C	5E-9	-	NR	1.18	-	[1.13-1.24]	GRB2	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST005831	17:75345203	29848360	"Julià A"
