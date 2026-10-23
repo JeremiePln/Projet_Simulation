@@ -1,0 +1,103 @@
+---
+title: "Fusion des tableaux de SNPs (30 études SLE - Population Européenne)"
+format: html
+---
+
+# 1. Chargement des packages
+
+```{r}
+#| message: false
+#| warning: false
+
+library(readr)
+library(dplyr)
+```
+
+# 2. Détection des fichiers TSV de SNPs dans le dossier
+
+```{r}
+# Lister tous les fichiers .tsv présents dans le même dossier que ce .qmd
+tous_les_tsv <- list.files(path = ".", pattern = "\\.tsv$", full.names = FALSE)
+
+# Exclure les fichiers récapitulatifs d'études (MONDO_...) et le futur fichier fusionné
+fichiers_exclus <- c(
+  "MONDO_0004670_studies_export.tsv",
+  "MONDO_0004670_SLE_European_clean.tsv",
+  "SLE_European_ALL_SNPs_merged.tsv"
+)
+
+fichiers_snps <- setdiff(tous_les_tsv, fichiers_exclus)
+# (Sécurité supplémentaire : exclure tout autre fichier commençant par "MONDO_")
+fichiers_snps <- fichiers_snps[!grepl("^MONDO_", fichiers_snps)]
+
+cat("Nombre de fichiers TSV de SNPs détectés :", length(fichiers_snps), "\n")
+print(fichiers_snps)
+```
+
+# 3. Lecture et fusion robuste des tableaux de SNPs
+
+```{r}
+#| message: false
+#| warning: false
+
+# Fonction de lecture sécurisée :
+# On lit tout en "character" au départ pour éviter les erreurs de type dans bind_rows()
+# (ex: chromosome "X" en texte vs "1" en numérique, ou fichiers vides à 0 SNP)
+lire_tsv_snp <- function(fichier) {
+  df <- read_tsv(
+    fichier,
+    col_types = cols(.default = col_character()),
+    show_col_types = FALSE
+  )
+  
+  # Nettoyage d'éventuels sauts de ligne parasites dans les cellules
+  df <- df %>%
+    mutate(across(everything(), ~ trimws(gsub("[\\r\\n\\s]+", " ", .x))))
+  
+  # Ajout du nom du fichier source et extraction automatique de l'identifiant GCST...
+  gcst_id <- regmatches(fichier, regexpr("GCST[0-9]+", fichier))
+  df$source_file <- fichier
+  df$study_GCST  <- ifelse(length(gcst_id) > 0, gcst_id, NA_character_)
+  
+  return(df)
+}
+
+# Lecture de tous les fichiers et empilement en un seul tableau
+liste_tableaux <- lapply(fichiers_snps, lire_tsv_snp)
+df_snps_brut   <- bind_rows(liste_tableaux)
+
+# Reconversion automatique des colonnes numériques (p-values, RAF, OR, beta...)
+df_snps_merged <- type_convert(df_snps_brut)
+
+cat("Dimensions du tableau fusionné (lignes x colonnes) :", dim(df_snps_merged), "\n")
+```
+
+# 4. Vérification et enrichissement (Optionnel)
+
+```{r}
+# Aperçu des premières lignes et du nombre de SNPs par étude
+head(df_snps_merged)
+
+if ("study_GCST" %in% names(df_snps_merged) && !all(is.na(df_snps_merged$study_GCST))) {
+  cat("\nNombre d'associations (lignes) récupérées par étude :\n")
+  print(table(df_snps_merged$study_GCST, useNA = "ifany"))
+}
+
+# Optionnel : Si vous voulez vérifier avec votre fichier des 30 études nettoyées
+if (file.exists("MONDO_0004670_SLE_European_clean.tsv")) {
+  df_studies <- read_tsv("MONDO_0004670_SLE_European_clean.tsv", show_col_types = FALSE)
+  cat("\nTotal théorique attendu selon associationCount :", sum(df_studies$associationCount, na.rm = TRUE), "lignes\n")
+}
+```
+
+# 5. Export du tableau final fusionné
+
+```{r}
+# Export en TSV
+write_tsv(df_snps_merged, "SLE_European_ALL_SNPs_merged.tsv", na = "")
+
+# Export en CSV (pratique si vous voulez l'ouvrir dans Excel ou un autre script R)
+write.csv(df_snps_merged, "SLE_European_ALL_SNPs_merged.csv", row.names = FALSE, na = "")
+
+cat("Fusion terminée : fichier 'SLE_European_ALL_SNPs_merged.tsv' créé avec succès !\n")
+```
