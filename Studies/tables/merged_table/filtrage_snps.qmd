@@ -1,0 +1,165 @@
+---
+title: "Filtrage, Croisement et Fusion des SNPs (SLE)"
+format: html
+---
+
+# 1. Chargement des packages et des données
+
+```{r}
+#| message: false
+#| warning: false
+
+library(readr)
+library(dplyr)
+library(stringr)
+
+# Charger le tableau fusionné des SNPs du GWAS Catalog
+df_merged <- read_delim("SLE_European_ALL_SNPs_merged.tsv", delim = "\t", show_col_types = FALSE)
+
+# Charger la liste de référence (top 100)
+df_top100 <- read_csv("snp_info_top100.csv", show_col_types = FALSE)
+
+cat("Nombre de lignes dans df_merged :", nrow(df_merged), "\n")
+cat("Nombre de SNPs dans le top100 :", nrow(df_top100), "\n")
+```
+
+# 2. Nettoyage et suppression des colonnes inutiles dans df_merged
+
+```{r}
+# Suppression des colonnes demandées si elles existent
+cols_a_supprimer <- c("efoTraits", "bgTraits", "author", "source_file", "study_GCST")
+df_merged <- df_merged %>% select(-any_of(cols_a_supprimer))
+
+# Extraire l'ID du SNP sans l'allèle de risque à la fin (ex: "rs6445975-C" -> "rs6445975")
+df_merged <- df_merged %>%
+  mutate(clean_snp = str_remove(riskAllele, "-[A-Za-z\\?]$"))
+
+# Idem pour la colonne SNP du top100 (au cas où il y aurait des suffixes)
+df_top100 <- df_top100 %>%
+  mutate(clean_snp = str_remove(SNP, "-[A-Za-z\\?]$"))
+```
+
+# 3. Comptage et extraction des SNPs communs avec le top100
+
+```{r}
+# Intersection des identifiants propres
+snps_communs <- intersect(df_merged$clean_snp, df_top100$clean_snp)
+
+cat("Nombre de SNPs uniques communs entre le merged et le top100 :", length(snps_communs), "\n")
+
+# Créer un tableau contenant uniquement les lignes du merged correspondant aux SNPs communs
+df_common <- df_merged %>%
+  filter(clean_snp %in% snps_communs)
+
+cat("Nombre total de lignes (occurrences) dans ce sous-tableau :", nrow(df_common), "\n")
+```
+
+# 4. Traitement des Odds Ratios, calcul des SE et test d'homogénéité
+
+```{r}
+# 1. Nettoyer et extraire les bornes de l'intervalle de confiance (ci)
+df_common <- df_common %>%
+  mutate(
+    or_num = as.numeric(orValue),
+    or_num = ifelse(is.na(or_num) | orValue == "-" | orValue == "", NA, or_num)
+  )
+
+ci_split <- str_match(df_common$ci, "\\[([0-9\\.]+)[\\-\\–]([0-9\\.]+)\\]")
+df_common$LL <- as.numeric(ci_split[, 2])
+df_common$UL <- as.numeric(ci_split[, 3])
+
+df_common <- df_common %>%
+  mutate(
+    log_or = log(or_num),
+    se_log_or = (log(UL) - log(LL)) / (2 * 1.96)
+  )
+
+# 2. Filtrer les lignes valides
+lignes_avant_filtre <- nrow(df_common)
+df_valid_or <- df_common %>%
+  filter(!is.na(or_num) & !is.na(se_log_or) & se_log_or > 0) %>%
+  mutate(
+    orValue   = as.numeric(or_num),
+    log_or    = as.numeric(log_or),
+    se_log_or = as.numeric(se_log_or)
+  )
+
+lignes_supprimees_or <- lignes_avant_filtre - nrow(df_valid_or)
+cat("Lignes supprimées car absence d'OR valide ou d'IC :", lignes_supprimees_or, "\n")
+```
+
+```{r}
+# 3. Analyse des doublons par SNP et application du test statistique
+log_decisions <- list()
+df_final_list <- list()
+
+snp_groups <- split(df_valid_or, df_valid_or$clean_snp)
+
+for (snp in names(snp_groups)) {
+  sub_df <- snp_groups[[snp]]
+  
+  if (nrow(sub_df) == 1) {
+    # OCCURRENCE UNIQUE : Forcer la structure en dataframe propre
+    df_final_list[[snp]] <- sub_df[1, ]
+    log_decisions[[snp]] <- data.frame(
+      SNP = snp,
+      Nombre_Occurrences = 1,
+      Details_OR = paste0("OR=", sub_df$orValue[1]),
+      Test_Statistique = "Aucun (occurrence unique)",
+      P_Value = NA,
+      Decision = "Conservé (1 seule source)",
+      stringsAsFactors = FALSE
+    )
+    
+  } else {
+    log_or_vals <- sub_df$log_or
+    se_vals <- sub_df$se_log_or
+    
+    if (length(log_or_vals) == 2) {
+      diff_log_or <- log_or_vals[1] - log_or_vals[2]
+      se_diff <- sqrt(se_vals[1]^2 + se_vals[2]^2)
+      z_score <- diff_log_or / se_diff
+      p_val <- 2 * (1 - pnorm(abs(z_score)))
+      test_nom <- "Test Z (2 études)"
+    } else {
+      w <- 1 / (se_vals^2)
+      weighted_mean_log_or <- sum(w * log_or_vals) / sum(w)
+      q_stat <- sum(w * (log_or_vals - weighted_mean_log_or)^2)
+      df_deg <- length(log_or_vals) - 1
+      p_val <- 1 - pchisq(q_stat, df = df_deg)
+      test_nom <- "Test Cochran Q (>=3 études)"
+    }
+    
+    if (p_val > 0.05) {
+      w <- 1 / (se_vals^2)
+      merged_log_or <- sum(w * log_or_vals) / sum(w)
+      merged_or <- as.numeric(exp(merged_log_or))
+      
+      merged_row <- sub_df[1, ]
+      merged_row$orValue <- as.numeric(merged_or)
+      merged_row$log_or  <- as.numeric(merged_log_or)
+      
+      df_final_list[[snp]] <- merged_row
+      decision_str <- paste0("Fusionné (OR combiné = ", round(merged_or, 4), ")")
+    } else {
+      decision_str <- "Supprimé (ORs significativement hétérogènes / p <= 0.05)"
+    }
+    
+    log_decisions[[snp]] <- data.frame(
+      SNP = snp,
+      Nombre_Occurrences = nrow(sub_df),
+      Details_OR = paste(sub_df$orValue, collapse = ", "),
+      Test_Statistique = test_nom,
+      P_Value = signif(p_val, 4),
+      Decision = decision_str,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+# 4. Consolidation finale sécurisée
+df_final_snps <- bind_rows(df_final_list) %>%
+  mutate(orValue = as.numeric(orValue))
+
+df_log_trace <- bind_rows(log_decisions)
+```
