@@ -1,0 +1,6 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs7574865-T	4E-14	-	NR	1.477	-	[1.335-1.634]	STAT4	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST001708	2:191099907	23053960	"Lee YH"
+rs12531711-A	6E-13	-	NR	1.593	-	[1.403-1.808]	TNPO3	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST001708	7:128977412	23053960	"Lee YH"
+rs13277113-A	2E-10	-	NR	1.391	-	[1.256-1.540]	BLK	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST001708	8:11491677	23053960	"Lee YH"
+rs729302-A	4E-8	-	NR	1.29	-	[1.41-1.18]	KCP,IRF5	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST001708	7:128928906	23053960	"Lee YH"
+rs2051549-?	3E-22	-	NR	-	-	-	HLA-DQB2	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST001708	6:32762309	23053960	"Lee YH"

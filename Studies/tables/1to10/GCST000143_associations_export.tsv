@@ -1,0 +1,2 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs10516487-G	4E-10	" "	0.77	1.38	-	[1.25-1.53]	BANK1	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000143	4:101829919	18204447	"Kozyrev SV"

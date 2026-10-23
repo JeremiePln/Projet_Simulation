@@ -1,0 +1,7 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs6445975-C	7E-9	" "	0.28	1.25	-	[1.16-1.35]	PXK	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000142	3:58384450	18204446	"Harley JB"
+rs10798269-?	1E-7	" "	0.64	1.22	-	[1.14-1.32]	TNFSF4	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000142	1:173340574	18204446	"Harley JB"
+rs4963128-?	3E-10	" "	0.34	1.28	-	[1.18-1.37]	PHRF1	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000142	11:589564	18204446	"Harley JB"
+rs9888739-T	2E-23	" "	0.13	1.62	-	[1.47-1.78]	ITGAM	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000142	16:31301932	18204446	"Harley JB"
+rs3131379-A	2E-52	" "	0.1	2.36	-	[2.11-2.64]	MSH5-SAPCD1,MSH5	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000142	6:31753256	18204446	"Harley JB"
+rs12537284-A	4E-19	" "	0.13	1.54	-	[1.40-1.70]	TPI1P2,CYCSP20	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000142	7:129077852	18204446	"Harley JB"

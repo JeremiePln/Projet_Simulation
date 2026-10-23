@@ -1,0 +1,10 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs13277113-A	1E-10	" "	0.23	1.39	-	[1.28-1.51]	BLK	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	8:11491677	18204098	"Hom G"
+rs979233-T	4E-6	" "	0.46	-	-	-	LINC02996,GHR	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	5:42375141	18204098	"Hom G"
+rs12141391-A	7E-6	-	0.02	-	-	-	NEGR1-IT1,NEGR1	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	1:71808790	18204098	"Hom G"
+rs10488631-C	2E-11	" "	0.12	-	-	-	IRF5,TNPO3	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	7:128954129	18204098	"Hom G"
+rs7574865-T	9E-14	" "	0.23	-	-	-	STAT4	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	2:191099907	18204098	"Hom G"
+rs11574637-C	3E-11	" "	0.19	1.33	-	[1.22-1.46]	ITGAX	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	16:31357553	18204098	"Hom G"
+rs2187668-A	3E-21	" "	0.11	-	-	-	HLA-DQA1	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	6:32638107	18204098	"Hom G"
+rs17083844-A	6E-6	" "	0.03	-	-	-	GTSCR1,LINC01541	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	18:71175007	18204098	"Hom G"
+rs11243676-A	3E-6	" "	0.07	-	-	-	NTNG2	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST000144	9:132221380	18204098	"Hom G"

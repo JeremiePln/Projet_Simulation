@@ -1,0 +1,8 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+rs7582694-C	4E-7	-	0.216	1.811	-	[NR]	STAT4	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST003103	2:191105394	26316170	"Demirci FY"
+rs1478897-T	8E-6	-	0.337	1.56	-	[NR]	BLK	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST003103	8:11537723	26316170	"Demirci FY"
+rs2187668-?	1E-9	-	NR	-	-	-	HLA-DQA1	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST003103	6:32638107	26316170	"Demirci FY"
+rs3129716-?	4E-9	-	NR	-	-	-	HLA-DQB1,MTCO3P1	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST003103	6:32689659	26316170	"Demirci FY"
+rs1150753-?	6E-9	-	NR	-	-	-	TNXB	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST003103	6:32092090	26316170	"Demirci FY"
+rs3131379-?	8E-8	-	NR	-	-	-	MSH5-SAPCD1,MSH5	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST003103	6:31753256	26316170	"Demirci FY"
+rs9267531-?	8E-8	-	NR	-	-	-	CSNK2B	"Systemic lupus erythematosus"	"systemic lupus erythematosus"	-	GCST003103	6:31668965	26316170	"Demirci FY"
