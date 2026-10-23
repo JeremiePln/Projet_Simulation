@@ -1,0 +1,2 @@
+riskAllele	pValue	pValueAnnotation	riskFrequency	orValue	beta	ci	mappedGenes	traitName	efoTraits	bgTraits	accessionId	locations	pubmedId	author
+chr7:128585616-C	1E-12	-	0.8903	-	"0.4502 unit decrease"	[0.33-0.57]	-	"Systemic lupus erythematosus (PheCode 695.42)"	"systemic lupus erythematosus"	-	GCST90476183	-	39024449	"Verma A"
