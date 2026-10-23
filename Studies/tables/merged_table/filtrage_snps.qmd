@@ -64,28 +64,30 @@ df_common <- df_common %>%
     or_num = ifelse(is.na(or_num) | orValue == "-" | orValue == "", NA, or_num)
   )
 
-ci_split <- str_match(df_common$ci, "\\[([0-9\\.]+)[\\-\\–]([0-9\\.]+)\\]")
+# Extraire Lower Limit (LL) et Upper Limit (UL) de la colonne ci
+ci_split <- str_match(df_common$ci, "\\[([0-9\\.]+)-([0-9\\.]+)\\]")
 df_common$LL <- as.numeric(ci_split[, 2])
 df_common$UL <- as.numeric(ci_split[, 3])
 
+# Calcul du Log(OR) et de l'Erreur Standard SE
 df_common <- df_common %>%
   mutate(
     log_or = log(or_num),
     se_log_or = (log(UL) - log(LL)) / (2 * 1.96)
   )
 
-# 2. Filtrer les lignes valides
+# 2. Filtrer et forcer orValue en numérique (double) pour tout le monde
 lignes_avant_filtre <- nrow(df_common)
 df_valid_or <- df_common %>%
   filter(!is.na(or_num) & !is.na(se_log_or) & se_log_or > 0) %>%
   mutate(
-    orValue   = as.numeric(or_num),
+    orValue   = as.numeric(or_num),  # <- GARANTIT QUE C'EST UN DOUBLE PARTOUT
     log_or    = as.numeric(log_or),
     se_log_or = as.numeric(se_log_or)
   )
 
 lignes_supprimees_or <- lignes_avant_filtre - nrow(df_valid_or)
-cat("Lignes supprimées car absence d'OR valide ou d'IC :", lignes_supprimees_or, "\n")
+cat("Lignes supprimées car absence d'OR valide ou d'intervalle de confiance :", lignes_supprimees_or, "\n")
 ```
 
 ```{r}
@@ -99,16 +101,14 @@ for (snp in names(snp_groups)) {
   sub_df <- snp_groups[[snp]]
   
   if (nrow(sub_df) == 1) {
-    # OCCURRENCE UNIQUE : Forcer la structure en dataframe propre
-    df_final_list[[snp]] <- sub_df[1, ]
+    df_final_list[[snp]] <- sub_df
     log_decisions[[snp]] <- data.frame(
       SNP = snp,
       Nombre_Occurrences = 1,
-      Details_OR = paste0("OR=", sub_df$orValue[1]),
+      Details_OR = paste0("OR=", sub_df$orValue),
       Test_Statistique = "Aucun (occurrence unique)",
       P_Value = NA,
-      Decision = "Conservé (1 seule source)",
-      stringsAsFactors = FALSE
+      Decision = "Conservé (1 seule source)"
     )
     
   } else {
@@ -131,12 +131,13 @@ for (snp in names(snp_groups)) {
     }
     
     if (p_val > 0.05) {
+      # Fusion via méta-analyse à effets fixes (moyenne pondérée)
       w <- 1 / (se_vals^2)
       merged_log_or <- sum(w * log_or_vals) / sum(w)
       merged_or <- as.numeric(exp(merged_log_or))
       
       merged_row <- sub_df[1, ]
-      merged_row$orValue <- as.numeric(merged_or)
+      merged_row$orValue <- as.numeric(merged_or)  # Forcé en numérique
       merged_row$log_or  <- as.numeric(merged_log_or)
       
       df_final_list[[snp]] <- merged_row
@@ -151,15 +152,30 @@ for (snp in names(snp_groups)) {
       Details_OR = paste(sub_df$orValue, collapse = ", "),
       Test_Statistique = test_nom,
       P_Value = signif(p_val, 4),
-      Decision = decision_str,
-      stringsAsFactors = FALSE
+      Decision = decision_str
     )
   }
 }
 
-# 4. Consolidation finale sécurisée
+# 4. Consolidation finale sans conflit de type
 df_final_snps <- bind_rows(df_final_list) %>%
   mutate(orValue = as.numeric(orValue))
 
 df_log_trace <- bind_rows(log_decisions)
+```
+
+# 5. Export des résultats finaux et du fichier de traçabilité
+
+```{r}
+# 1. Exporter le tableau propre des SNPs communs et fusionnés
+write_tsv(df_final_snps, "SNPs_communs_fusionnes.tsv", na = "")
+write.csv(df_final_snps, "SNPs_communs_fusionnes.csv", row.names = FALSE, na = "")
+
+# 2. Exporter le fichier de log traçant les p-values et décisions
+write_excel_csv(df_log_trace, "rapport_decisions_fusion_or.csv")
+write.table(df_log_trace, file = "rapport_decisions_fusion_or.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+cat("\n--- TRAITEMENT TERMINÉ AVEC SUCCÈS ---\n")
+cat("1. Fichier principal des SNPs : 'SNPs_communs_fusionnes.tsv' (ou .csv)\n")
+cat("2. Fichier de traçabilité (p-values & décisions) : 'rapport_decisions_fusion_or.csv' (ou .txt)\n")
 ```
