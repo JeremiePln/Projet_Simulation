@@ -1,0 +1,293 @@
+---
+title: "Random Forest - Régression du PRS (true_prs) à partir des SNP"
+format: html
+---
+
+# RANDOM FOREST - RÉGRESSION
+# Y = true_prs (quantitatif)
+# X = 100 SNP codés 0/1/2
+
+```{r}
+# ==========================================================
+# 1. PACKAGES
+# ==========================================================
+
+# À faire une seule fois si nécessaire :
+# install.packages(c("randomForest", "caret"))
+
+library(randomForest)
+library(caret)
+```
+
+
+```{r}
+# ==========================================================
+# 2. CHARGER LES DONNÉES
+# ==========================================================
+setwd("C:/Users/aimer/Documents/9eme_semestre/Projet")
+data <- read.csv("data_complet.csv")
+
+dim(data)
+str(data[, 1:6])
+summary(data$true_prs)
+sum(is.na(data))
+```
+
+
+```{r}
+# ==========================================================
+# 3. PRÉPARATION DES DONNÉES
+# ==========================================================
+
+# - Y = true_prs
+# - X = les 100 SNP (numériques 0/1/2)
+# - On retire ID (identifiant) ET phenotype :
+#   phenotype est en partie une conséquence du PRS, le garder
+#   comme prédicteur serait une fuite d'information.
+
+y <- data$true_prs
+
+X <- data[, setdiff(names(data), c("ID", "true_prs", "phenotype"))]
+X <- as.matrix(X)
+storage.mode(X) <- "numeric"
+
+dim(X)
+summary(y)
+```
+
+
+```{r}
+# ==========================================================
+# 4. TRAIN / TEST  (même découpage que XGBoost : seed 123, 80/20)
+# ==========================================================
+
+set.seed(123)
+
+train_id <- createDataPartition(
+  y,
+  p = 0.80,
+  list = FALSE
+)
+
+X_train <- X[train_id, ]
+X_test  <- X[-train_id, ]
+
+y_train <- y[train_id]
+y_test  <- y[-train_id]
+
+dim(X_train)
+dim(X_test)
+```
+
+
+```{r}
+# ==========================================================
+# 5. RANDOM FOREST - CHOIX DE mtry PAR VALIDATION CROISÉE
+# ==========================================================
+# mtry = nombre de SNP tirés au hasard à chaque coupure.
+# Par défaut en régression : p/3 = 33. On le règle par CV 5 plis
+# (équivalent du xgb.cv utilisé pour le nombre d'arbres).
+
+set.seed(123)
+cv_rf <- train(
+  x = X_train,
+  y = y_train,
+  method    = "rf",
+  ntree     = 300,
+  tuneGrid  = expand.grid(mtry = c(5, 10, 20, 33, 50, 75, 100)),
+  trControl = trainControl(method = "cv", number = 5)
+)
+
+cv_rf$results[, c("mtry", "RMSE", "Rsquared", "MAE")]
+best_mtry <- cv_rf$bestTune$mtry
+best_mtry
+
+plot(cv_rf, main = "Random Forest - RMSE en CV selon mtry")
+```
+
+
+```{r}
+# ==========================================================
+# 6. MODÈLE FINAL
+# ==========================================================
+# importance = TRUE : calcule l'importance par permutation (%IncMSE)
+
+set.seed(123)
+
+model_rf <- randomForest(
+  x = X_train,
+  y = y_train,
+  ntree      = 1000,
+  mtry       = best_mtry,
+  nodesize   = 5,
+  importance = TRUE
+)
+
+model_rf
+```
+
+
+```{r}
+# ==========================================================
+# 7. ERREUR OOB EN FONCTION DU NOMBRE D'ARBRES
+# ==========================================================
+# Permet de vérifier que 1000 arbres suffisent (courbe plate).
+
+plot(model_rf, main = "Random Forest - Erreur OOB selon ntree")
+```
+
+
+```{r}
+# ==========================================================
+# 8. PRÉDICTION
+# ==========================================================
+
+y_pred <- predict(model_rf, newdata = X_test)
+
+head(y_pred)
+```
+
+
+```{r}
+# ==========================================================
+# 9. RMSE / MAE / R²
+# ==========================================================
+
+RMSE <- sqrt(mean((y_test - y_pred)^2))
+
+MAE <- mean(abs(y_test - y_pred))
+
+R2 <- 1 - (
+  sum((y_test - y_pred)^2) /
+  sum((y_test - mean(y_test))^2)
+)
+
+performance <- data.frame(
+  RMSE = RMSE,
+  MAE = MAE,
+  R2 = R2
+)
+
+performance
+```
+
+
+```{r}
+# ==========================================================
+# 10. OBSERVÉ VS PRÉDIT
+# ==========================================================
+
+plot(
+  y_test,
+  y_pred,
+  xlab = "PRS observé",
+  ylab = "PRS prédit",
+  main = "Random Forest - Observé vs Prédit"
+)
+
+abline(a = 0, b = 1)
+```
+
+
+```{r}
+# ==========================================================
+# 11. COMPARAISON AVEC UNE RÉGRESSION LINÉAIRE
+# ==========================================================
+# Un PRS est en général une somme pondérée de SNP : un modèle
+# linéaire est donc un point de comparaison très pertinent.
+# Si lm fait aussi bien (ou mieux) que Random Forest, c'est normal.
+
+df_train <- data.frame(y = y_train, X_train)
+df_test  <- data.frame(X_test)
+
+model_lm <- lm(y ~ ., data = df_train)
+pred_lm  <- predict(model_lm, newdata = df_test)
+
+perf_lm <- data.frame(
+  Modele = c("Random Forest", "Régression linéaire"),
+  RMSE = c(RMSE, sqrt(mean((y_test - pred_lm)^2))),
+  MAE  = c(MAE,  mean(abs(y_test - pred_lm))),
+  R2   = c(R2,   1 - sum((y_test - pred_lm)^2) /
+                     sum((y_test - mean(y_test))^2))
+)
+
+perf_lm
+```
+
+
+```{r}
+# ==========================================================
+# 12. VARIABLE IMPORTANCE
+# ==========================================================
+# %IncMSE      : perte de précision quand on permute le SNP (la plus fiable)
+# IncNodePurity: baisse de variance cumulée sur les coupures
+
+importance_rf <- importance(model_rf)
+importance_rf <- importance_rf[order(importance_rf[, "%IncMSE"],
+                                     decreasing = TRUE), ]
+
+head(importance_rf, 20)
+```
+
+
+```{r}
+# ==========================================================
+# 13. GRAPHIQUE IMPORTANCE (top 20 SNP)
+# ==========================================================
+
+varImpPlot(
+  model_rf,
+  n.var = 20,
+  type  = 1,
+  main  = "Random Forest - Importance (%IncMSE, top 20 SNP)"
+)
+```
+
+
+```{r}
+# ==========================================================
+# 14. LES 5 SNP LES PLUS IMPORTANTS
+# ==========================================================
+
+top5 <- rownames(importance_rf)[1:20]
+top5
+```
+
+
+```{r}
+# ==========================================================
+# 15. PRS RANDOM FOREST SUR LE PHÉNOTYPE (0/1) AVEC LES 5 SNP
+# ==========================================================
+# Mêmes 5 SNP que dans l'étape précédente, mais cible binaire.
+# On compare au PRS linéaire (régression logistique).
+
+library(pROC)
+
+pheno <- factor(data$phenotype, levels = c(0, 1))
+dat5  <- data.frame(data[, top5])
+
+set.seed(123)
+model_rf5 <- randomForest(
+  x = dat5[train_id, ],
+  y = pheno[train_id],
+  ntree = 1000, mtry = 2, nodesize = 20
+)
+
+prob_rf5 <- predict(model_rf5, newdata = dat5[-train_id, ], type = "prob")[, "1"]
+roc_rf5  <- roc(pheno[-train_id], prob_rf5, levels = c("0", "1"), direction = "<")
+
+glm5 <- glm(pheno[train_id] ~ ., data = dat5[train_id, ], family = binomial)
+prob_glm5 <- predict(glm5, newdata = dat5[-train_id, ], type = "response")
+roc_glm5  <- roc(pheno[-train_id], prob_glm5, levels = c("0", "1"), direction = "<")
+
+auc(roc_rf5)
+auc(roc_glm5)
+
+plot(roc_glm5, col = "grey40", main = "ROC - 5 SNP")
+plot(roc_rf5, col = "tomato", add = TRUE)
+legend("bottomright", c("Logistique", "Random Forest"),
+       col = c("grey40", "tomato"), lwd = 2)
+```
+
+
+
