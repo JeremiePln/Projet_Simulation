@@ -1,0 +1,364 @@
+---
+title: "Scores génétiques du lupus avec Random Forest et XGBoost"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+lang: fr
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE)
+```
+
+## Objectif et utilisation
+
+Nous cherchons à apprendre un score individuel à partir des génotypes :
+
+$$
+S_i = \widehat f(G_{i1},\ldots,G_{ip}).
+$$
+
+La cible d'apprentissage est `phenotype`, avec **1 = cas de lupus** et
+**0 = témoin**. Vérifier cette convention dans la documentation des
+données. Les sorties continues de Random Forest et XGBoost sont
+utilisées comme scores génétiques non linéaires. Aucun OR ni score
+`true_prs` préexistant n'est nécessaire. Ce document diffère donc des
+scripts de régression qui reconstruisent `true_prs`.
+
+Placer ce document, `genotypes_top100.csv` et `phenotype.csv` dans le
+même dossier. Ouvrir le document dans RStudio et cliquer sur **Knit**
+pour produire le rapport HTML. Installer préalablement les packages
+ci-dessous dans la console si nécessaire.
+
+```{r packages}
+# À exécuter une seule fois dans la console si nécessaire :
+# install.packages(c("ranger", "xgboost", "caret", "pROC", "rmarkdown", "knitr"))
+
+library(ranger)
+library(xgboost)
+library(caret)
+library(pROC)
+```
+
+## Importation et vérification des données
+
+Chaque ligne correspond à un individu. Les colonnes commençant par `rs`
+correspondent ici aux SNPs, codés 0/1/2. Les identifiants servent
+uniquement à assembler les fichiers et à suivre les résultats.
+
+```{r importation}
+geno_path <- "genotypes_top100.csv"
+pheno_path <- "phenotype.csv"
+if (!file.exists(geno_path) || !file.exists(pheno_path)) {
+  stop("Placer les deux CSV dans le dossier du document, ou adapter leurs chemins.")
+}
+
+geno <- read.csv(geno_path, check.names = FALSE)
+pheno <- read.csv(pheno_path, check.names = FALSE)
+
+stopifnot(
+  all(c("ID") %in% names(geno)),
+  all(c("ID", "phenotype") %in% names(pheno)),
+  !anyDuplicated(names(geno)),
+  !anyNA(geno$ID), !anyNA(pheno$ID),
+  !anyDuplicated(geno$ID), !anyDuplicated(pheno$ID),
+  setequal(geno$ID, pheno$ID)
+)
+
+# match() garantit l'alignement du phénotype sur les génotypes.
+y <- pheno$phenotype[match(geno$ID, pheno$ID)]
+snp_names <- grep("^rs", names(geno), value = TRUE)
+X <- geno[, snp_names, drop = FALSE]
+
+stopifnot(
+  ncol(X) > 0,
+  is.numeric(y), !anyNA(y),
+  all(y %in% c(0, 1)), length(unique(y)) == 2,
+  all(vapply(X, is.numeric, logical(1))),
+  !anyNA(X), all(as.matrix(X) %in% c(0, 1, 2))
+)
+
+# Le script s'arrête en présence de génotypes manquants ou invalides.
+# Une éventuelle imputation devra être apprise dans l'apprentissage uniquement.
+data.frame(Individus = nrow(X), SNPs = ncol(X))
+table(Phenotype = y)
+```
+
+**Résultat attendu :** avec les fichiers initiaux, 2 000 individus, 100
+SNPs, 500 cas et 1 500 témoins. Ces nombres sont à vérifier, pas à
+imposer à un autre jeu de données. Le script sélectionne explicitement
+les SNPs et exclut donc `ID`, `phenotype` et un éventuel `true_prs` des
+prédicteurs.
+
+Avant d'interpréter les performances, documenter l'origine réelle ou
+simulée des données et la sélection du « top 100 ». Une sélection
+utilisant les phénotypes avant la séparation apprentissage/test
+compromet l'indépendance du test.
+
+## Séparation apprentissage/test
+
+Nous réservons environ 20 % des individus pour le test final. La
+stratification conserve la proportion de cas. Les deux modèles
+utiliseront exactement les mêmes individus. Cette séparation suppose des
+individus indépendants ; les apparentés devraient être regroupés dans le
+même ensemble.
+
+```{r partition}
+set.seed(123)
+train_id <- as.vector(
+  createDataPartition(factor(y), p = 0.80, list = FALSE)
+)
+test_id <- setdiff(seq_len(nrow(X)), train_id)
+
+X_train <- X[train_id, , drop = FALSE]
+X_test  <- X[test_id, , drop = FALSE]
+y_train <- y[train_id]
+y_test  <- y[test_id]
+
+stopifnot(length(unique(y_train)) == 2, length(unique(y_test)) == 2)
+
+data.frame(
+  Ensemble = c("Apprentissage", "Test"),
+  Individus = c(length(train_id), length(test_id)),
+  Cas = c(sum(y_train == 1), sum(y_test == 1)),
+  Temoins = c(sum(y_train == 0), sum(y_test == 0))
+)
+```
+
+Le jeu de test ne sert ni à sélectionner les SNPs ni à régler les
+paramètres. La graine aléatoire rend le tirage reproductible pour les
+mêmes données et le même environnement logiciel.
+
+## Random Forest : apprentissage et calcul du score
+
+Une forêt de probabilités estime, pour chaque arbre, la proportion de
+cas dans la feuille atteinte par l'individu. La moyenne de ces
+estimations constitue le score RF. La cible doit être un facteur et
+`probability = TRUE` doit être activé. Nous conservons ici un réglage de
+départ fixe, sans optimisation des paramètres RF.
+
+```{r random-forest}
+set.seed(123)
+model_rf <- ranger(
+  x = X_train,
+  y = factor(y_train, levels = c(0, 1)),
+  probability = TRUE,
+  num.trees = 1000,
+  mtry = max(1L, floor(sqrt(ncol(X_train)))),
+  min.node.size = 10,
+  importance = "permutation",
+  num.threads = 1,
+  seed = 123
+)
+
+# Les colonnes correspondent aux classes "0" et "1".
+prob_rf <- predict(model_rf, data = X_test)$predictions
+S_rf <- as.numeric(prob_rf[, "1"])
+head(S_rf)
+```
+
+**Interprétation attendue :** un score élevé indique que le modèle
+attribue une plus forte probabilité à la classe « cas ». Un score de
+0,70 ne signifie pas, sans calibration externe, un risque de 70 % de
+développer le lupus au cours de la vie. Le score n'est pas une somme
+d'importances de SNPs.
+
+## XGBoost : apprentissage et calcul du score
+
+L'objectif `binary:logistic` permet aux arbres XGBoost de produire une
+probabilité pour la classe 1. Ce nom ne désigne pas une régression
+logistique classique sur les SNPs. Une validation croisée à cinq plis,
+limitée à l'apprentissage, choisit le nombre d'itérations en minimisant
+la logloss.
+
+```{r xgboost}
+dtrain <- xgb.DMatrix(data = as.matrix(X_train), label = y_train)
+dtest  <- xgb.DMatrix(data = as.matrix(X_test))
+
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "logloss",
+  max_depth = 3,
+  eta = 0.05,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  nthread = 1
+)
+
+set.seed(123)
+folds <- createFolds(factor(y_train), k = 5, returnTrain = FALSE)
+
+cv_xgb <- xgb.cv(
+  params = params,
+  data = dtrain,
+  nrounds = 1000,
+  folds = folds,
+  early_stopping_rounds = 30,
+  verbose = 0
+)
+
+# Retenir la meilleure itération parmi celles effectivement évaluées.
+cv_loss <- cv_xgb$evaluation_log$test_logloss_mean
+stopifnot(length(cv_loss) > 0, all(is.finite(cv_loss)))
+best_nrounds <- which.min(cv_loss)
+best_nrounds
+
+set.seed(123)
+model_xgb <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = best_nrounds,
+  verbose = 0
+)
+S_xgb <- as.numeric(predict(model_xgb, dtest))
+head(S_xgb)
+```
+
+Les scores sont calculés pour les mêmes individus que ceux de Random
+Forest. Le nombre d'itérations de XGBoost est ajusté, tandis que RF
+utilise des paramètres fixes : cette comparaison est une première
+expérience, pas un benchmark où les deux modèles ont bénéficié d'une
+optimisation équivalente.
+
+## Tableau des scores et export
+
+```{r scores}
+stopifnot(
+  length(S_rf) == length(y_test),
+  length(S_xgb) == length(y_test),
+  all(is.finite(S_rf)), all(is.finite(S_xgb)),
+  all(S_rf >= 0 & S_rf <= 1),
+  all(S_xgb >= 0 & S_xgb <= 1)
+)
+
+resultats <- data.frame(
+  ID = geno$ID[test_id],
+  phenotype = y_test,
+  S_RF = S_rf,
+  S_XGBoost = S_xgb
+)
+head(resultats, 10)
+
+# Ce fichier sera créé (ou remplacé lors d'une nouvelle exécution).
+write.csv(resultats, "scores_genetiques_test.csv", row.names = FALSE)
+```
+
+Chaque ligne contient le phénotype observé et les deux scores. Aucun
+seuil n'est nécessaire pour produire le score continu. Un nouvel
+individu peut recevoir un score sans connaître son phénotype, à
+condition de fournir les mêmes SNPs dans le même ordre et avec le même
+codage allélique.
+
+## Évaluation sur le test
+
+Nous évaluons la discrimination avec la ROC-AUC et la qualité des
+probabilités avec le score de Brier et la logloss. Une référence prédit
+la même probabilité pour tous : la proportion de cas observée dans
+l'apprentissage.
+
+```{r evaluation}
+evaluer <- function(observe, score) {
+  # Éviter log(0) pour la logloss uniquement.
+  p <- pmin(pmax(score, 1e-15), 1 - 1e-15)
+  roc_obj <- pROC::roc(
+    response = observe, predictor = score,
+    levels = c(0, 1), direction = "<", quiet = TRUE
+  )
+  data.frame(
+    ROC_AUC = as.numeric(pROC::auc(roc_obj)),
+    Brier = mean((score - observe)^2),
+    Logloss = -mean(observe * log(p) + (1 - observe) * log(1 - p))
+  )
+}
+
+S_reference <- rep(mean(y_train), length(y_test))
+performances <- rbind(
+  cbind(Modele = "Random Forest", evaluer(y_test, S_rf)),
+  cbind(Modele = "XGBoost", evaluer(y_test, S_xgb)),
+  cbind(Modele = "Probabilité constante", evaluer(y_test, S_reference))
+)
+knitr::kable(performances, digits = 4)
+write.csv(performances, "performances_scores_test.csv", row.names = FALSE)
+```
+
+- **ROC-AUC :** plus élevée signifie une meilleure discrimination. Une
+  valeur proche de 0,5 correspond à un classement proche du hasard ; 1 à
+  une séparation parfaite dans ce test. L'orientation est fixée : une
+  AUC inférieure à 0,5 reste visible.
+- **Brier :** plus faible signifie des probabilités globalement plus
+  proches des observations ; comparer avec la référence constante.
+- **Logloss :** plus faible est préférable ; elle pénalise fortement les
+  erreurs faites avec une grande confiance.
+
+Une meilleure AUC n'implique pas nécessairement un meilleur Brier. Nous
+ne connaissons pas les valeurs à l'avance et ne pouvons pas supposer
+qu'un modèle surpassera l'autre. Ce tableau ne fournit pas d'intervalles
+de confiance : de petites différences ne suffisent pas à établir une
+supériorité robuste.
+
+## Visualiser les résultats
+
+```{r distributions, fig.width=9, fig.height=4}
+local({
+  old_par <- par(mfrow = c(1, 2))
+  on.exit(par(old_par))
+  groupes <- factor(y_test, levels = c(0, 1), labels = c("Témoins", "Cas"))
+  boxplot(S_rf ~ groupes, ylim = c(0, 1), col = c("#BFD7EA", "#F0B7A4"),
+          ylab = "Score génétique", xlab = "", main = "Random Forest")
+  boxplot(S_xgb ~ groupes, ylim = c(0, 1), col = c("#BFD7EA", "#F0B7A4"),
+          ylab = "Score génétique", xlab = "", main = "XGBoost")
+})
+```
+
+Si le modèle discrimine les groupes, les cas devraient recevoir des
+scores plus élevés en moyenne. Un chevauchement est possible : il ne
+faut pas attendre une séparation parfaite pour une maladie complexe.
+
+```{r courbes-roc, fig.width=6, fig.height=5}
+roc_rf <- pROC::roc(y_test, S_rf, levels = c(0, 1), direction = "<", quiet = TRUE)
+roc_xgb <- pROC::roc(y_test, S_xgb, levels = c(0, 1), direction = "<", quiet = TRUE)
+plot(roc_rf, col = "#2166AC", lwd = 2, legacy.axes = TRUE,
+     main = "Discrimination sur le test")
+plot(roc_xgb, col = "#D6604D", lwd = 2, add = TRUE)
+legend("bottomright", legend = c("Random Forest", "XGBoost"),
+       col = c("#2166AC", "#D6604D"), lwd = 2, bty = "n")
+```
+
+## Limites et conclusion à rédiger après exécution
+
+Ces modèles apprennent le statut cas/témoin à partir des SNPs. Leurs
+sorties peuvent être présentées comme des **scores génétiques non
+linéaires**. Dans une étude cas/témoins, la proportion de cas dépend de
+l'échantillonnage : les sorties ne sont pas automatiquement des risques
+absolus applicables à la population. Une étude de calibration et une
+validation indépendante sont nécessaires pour aller vers cette
+interprétation. Si les données sont simulées, les conclusions portent
+sur ce scénario de simulation.
+
+Pour le compte rendu, compléter après exécution :
+
+> Sur le jeu de test, Random Forest obtient une ROC-AUC de […] et un
+> score de Brier de […], contre […] et […] pour XGBoost. Ces résultats
+> indiquent […]. La comparaison à la référence constante montre […]. Les
+> conclusions restent limitées par la taille du test, la sélection
+> préalable des SNPs et l'origine des données.
+
+Le test final ne doit pas être utilisé ensuite pour retoucher les
+modèles et présenter les mêmes performances comme une évaluation
+indépendante.
+
+## Reproductibilité
+
+```{r versions}
+sessionInfo()
+```
+
+Référence méthodologique pour le principe RF-GRS : Venkat et al. (2025),
+*Exploring Random Forest in Genetic Risk Score Construction*,
+[doi:10.1002/gepi.70022](https://doi.org/10.1002/gepi.70022). La branche
+XGBoost et les évaluations présentées ici sont une adaptation au projet.
