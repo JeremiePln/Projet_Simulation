@@ -1,0 +1,556 @@
+---
+title: "Scores génétiques du lupus avec Random Forest et XGBoost"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+lang: fr
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE)
+```
+
+## Objectif et utilisation
+
+Nous cherchons à apprendre un score individuel à partir des génotypes :
+
+\[
+S_i = \widehat f(G_{i1},\ldots,G_{ip}).
+\]
+
+La cible d'apprentissage est `phenotype`, avec **1 = cas de lupus** et
+**0 = témoin**. Vérifier cette convention dans la documentation des données.
+Les sorties continues de Random Forest et XGBoost sont utilisées comme scores
+génétiques non linéaires. Aucun OR ni score `true_prs` préexistant n'est nécessaire.
+Ce document diffère donc des scripts de régression qui reconstruisent `true_prs`.
+
+Placer ce document, `genotypes_top100.csv`, `phenotype.csv` et `true_prs.csv`
+dans le même dossier. Le nouveau CSV doit contenir uniquement une colonne nommée
+`true_prs`, avec une valeur numérique par individu, **dans exactement le même
+ordre que les lignes de `genotypes_top100.csv`**. Sans identifiant dans ce fichier,
+le code peut vérifier le nombre de lignes, mais ne peut pas vérifier leur correspondance.
+Utiliser un CSV avec point décimal (par exemple `0.42`), comme attendu par `read.csv`.
+Le score de référence sert à la comparaison uniquement : il n'entre pas dans
+l'apprentissage RF/XGBoost.
+Ouvrir le document dans RStudio et cliquer sur **Knit** pour produire le rapport HTML.
+Installer préalablement les packages ci-dessous dans la console si nécessaire.
+
+```{r packages}
+# À exécuter une seule fois dans la console si nécessaire :
+# install.packages(c("ranger", "xgboost", "caret", "pROC", "rmarkdown", "knitr"))
+
+library(ranger)
+library(xgboost)
+library(caret)
+library(pROC)
+```
+
+## Importation et vérification des données
+
+Chaque ligne correspond à un individu. Les colonnes commençant par `rs`
+correspondent ici aux SNPs, codés 0/1/2. Les identifiants servent uniquement
+à assembler les fichiers et à suivre les résultats.
+
+```{r importation}
+geno_path <- "genotypes_top100.csv"
+pheno_path <- "phenotype.csv"
+if (!file.exists(geno_path) || !file.exists(pheno_path)) {
+  stop("Placer les deux CSV dans le dossier du document, ou adapter leurs chemins.")
+}
+
+geno <- read.csv(geno_path, check.names = FALSE)
+pheno <- read.csv(pheno_path, check.names = FALSE)
+
+stopifnot(
+  all(c("ID") %in% names(geno)),
+  all(c("ID", "phenotype") %in% names(pheno)),
+  !anyDuplicated(names(geno)),
+  !anyNA(geno$ID), !anyNA(pheno$ID),
+  !anyDuplicated(geno$ID), !anyDuplicated(pheno$ID),
+  setequal(geno$ID, pheno$ID)
+)
+
+# match() garantit l'alignement du phénotype sur les génotypes.
+y <- pheno$phenotype[match(geno$ID, pheno$ID)]
+snp_names <- grep("^rs", names(geno), value = TRUE)
+X <- geno[, snp_names, drop = FALSE]
+
+stopifnot(
+  ncol(X) > 0,
+  is.numeric(y), !anyNA(y),
+  all(y %in% c(0, 1)), length(unique(y)) == 2,
+  all(vapply(X, is.numeric, logical(1))),
+  !anyNA(X), all(as.matrix(X) %in% c(0, 1, 2))
+)
+
+# Le script s'arrête en présence de génotypes manquants ou invalides.
+# Une éventuelle imputation devra être apprise dans l'apprentissage uniquement.
+data.frame(Individus = nrow(X), SNPs = ncol(X))
+table(Phenotype = y)
+```
+
+**Résultat attendu :** avec les fichiers initiaux, 2 000 individus, 100 SNPs,
+500 cas et 1 500 témoins. Ces nombres sont à vérifier, pas à imposer à un autre
+jeu de données. Le script sélectionne explicitement les SNPs et exclut donc
+`ID`, `phenotype` et un éventuel `true_prs` des prédicteurs.
+
+Avant d'interpréter les performances, documenter l'origine réelle ou simulée des
+données et la sélection du « top 100 ». Une sélection utilisant les phénotypes
+avant la séparation apprentissage/test compromet l'indépendance du test.
+
+## Importation du score de référence `true_prs`
+
+```{r importation-true-prs}
+prs_path <- "true_prs.csv"
+if (!file.exists(prs_path)) stop("Fichier true_prs.csv introuvable dans le dossier du document.")
+prs_data <- read.csv(prs_path, check.names = FALSE)
+if (ncol(prs_data) != 1L || !identical(names(prs_data), "true_prs")) {
+  stop("true_prs.csv doit contenir uniquement une colonne avec l'en-tête true_prs.")
+}
+if (nrow(prs_data) != nrow(geno)) {
+  stop("Le nombre de lignes de true_prs.csv doit être égal à celui de genotypes_top100.csv.")
+}
+true_prs <- prs_data$true_prs
+if (!is.numeric(true_prs) || any(!is.finite(true_prs))) {
+  stop("true_prs doit être numérique, sans valeur manquante ou infinie (point décimal).")
+}
+if (length(unique(true_prs)) < 2L) stop("true_prs est constant : comparaison impossible.")
+# ATTENTION : l'alignement repose exclusivement sur l'ordre des lignes.
+summary(true_prs)
+```
+
+## Séparation apprentissage/test
+
+Nous réservons environ 20 % des individus pour le test final. La stratification
+conserve la proportion de cas. Les deux modèles utiliseront exactement les mêmes
+individus. Cette séparation suppose des individus indépendants ; les apparentés
+devraient être regroupés dans le même ensemble.
+
+```{r partition}
+set.seed(123)
+train_id <- as.vector(
+  createDataPartition(factor(y), p = 0.80, list = FALSE)
+)
+test_id <- setdiff(seq_len(nrow(X)), train_id)
+
+X_train <- X[train_id, , drop = FALSE]
+X_test  <- X[test_id, , drop = FALSE]
+y_train <- y[train_id]
+y_test  <- y[test_id]
+prs_train <- true_prs[train_id]
+prs_test <- true_prs[test_id]
+if (length(unique(prs_train)) < 2L) stop("true_prs est constant dans l'apprentissage.")
+
+stopifnot(length(unique(y_train)) == 2, length(unique(y_test)) == 2)
+
+data.frame(
+  Ensemble = c("Apprentissage", "Test"),
+  Individus = c(length(train_id), length(test_id)),
+  Cas = c(sum(y_train == 1), sum(y_test == 1)),
+  Temoins = c(sum(y_train == 0), sum(y_test == 0))
+)
+```
+
+Le jeu de test ne sert ni à sélectionner les SNPs ni à régler les paramètres.
+La graine aléatoire rend le tirage reproductible pour les mêmes données et le
+même environnement logiciel.
+
+## Random Forest : apprentissage et calcul du score
+
+Une forêt de probabilités estime, pour chaque arbre, la proportion de cas dans
+la feuille atteinte par l'individu. La moyenne de ces estimations constitue le
+score RF. La cible doit être un facteur et `probability = TRUE` doit être activé.
+Nous conservons ici un réglage de départ fixe, sans optimisation des paramètres RF.
+
+```{r random-forest}
+set.seed(123)
+model_rf <- ranger(
+  x = X_train,
+  y = factor(y_train, levels = c(0, 1)),
+  probability = TRUE,
+  num.trees = 1000,
+  mtry = max(1L, floor(sqrt(ncol(X_train)))),
+  min.node.size = 10,
+  importance = "permutation",
+  num.threads = 1,
+  seed = 123
+)
+
+# Les colonnes correspondent aux classes "0" et "1".
+prob_rf <- predict(model_rf, data = X_test)$predictions
+S_rf <- as.numeric(prob_rf[, "1"])
+head(S_rf)
+```
+
+**Interprétation attendue :** un score élevé indique que le modèle attribue une
+plus forte probabilité à la classe « cas ». Un score de 0,70 ne signifie pas,
+sans calibration externe, un risque de 70 % de développer le lupus au cours de
+la vie. Le score n'est pas une somme d'importances de SNPs.
+
+## XGBoost : apprentissage et calcul du score
+
+L'objectif `binary:logistic` permet aux arbres XGBoost de produire une probabilité
+pour la classe 1. Ce nom ne désigne pas une régression logistique classique sur
+les SNPs. Une validation croisée à cinq plis, limitée à l'apprentissage, choisit
+le nombre d'itérations en minimisant la logloss.
+
+```{r xgboost}
+dtrain <- xgb.DMatrix(data = as.matrix(X_train), label = y_train)
+dtest  <- xgb.DMatrix(data = as.matrix(X_test))
+
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "logloss",
+  max_depth = 3,
+  eta = 0.05,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  nthread = 1
+)
+
+set.seed(123)
+folds <- createFolds(factor(y_train), k = 5, returnTrain = FALSE)
+
+cv_xgb <- xgb.cv(
+  params = params,
+  data = dtrain,
+  nrounds = 1000,
+  folds = folds,
+  early_stopping_rounds = 30,
+  verbose = 0
+)
+
+# Retenir la meilleure itération parmi celles effectivement évaluées.
+cv_loss <- cv_xgb$evaluation_log$test_logloss_mean
+stopifnot(length(cv_loss) > 0, all(is.finite(cv_loss)))
+best_nrounds <- which.min(cv_loss)
+best_nrounds
+
+set.seed(123)
+model_xgb <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = best_nrounds,
+  verbose = 0
+)
+S_xgb <- as.numeric(predict(model_xgb, dtest))
+head(S_xgb)
+```
+
+Les scores sont calculés pour les mêmes individus que ceux de Random Forest.
+Le nombre d'itérations de XGBoost est ajusté, tandis que RF utilise des paramètres
+fixes : cette comparaison est une première expérience, pas un benchmark où les
+deux modèles ont bénéficié d'une optimisation équivalente.
+
+## Tableau des scores et export
+
+```{r scores}
+stopifnot(
+  length(S_rf) == length(y_test),
+  length(S_xgb) == length(y_test),
+  all(is.finite(S_rf)), all(is.finite(S_xgb)),
+  all(S_rf >= 0 & S_rf <= 1),
+  all(S_xgb >= 0 & S_xgb <= 1)
+)
+
+resultats <- data.frame(
+  ID = geno$ID[test_id],
+  phenotype = y_test,
+  S_RF = S_rf,
+  S_XGBoost = S_xgb,
+  true_prs = prs_test
+)
+head(resultats, 10)
+
+# Ce fichier sera créé (ou remplacé lors d'une nouvelle exécution).
+write.csv(resultats, "scores_genetiques_test.csv", row.names = FALSE)
+```
+
+Chaque ligne contient le phénotype observé, les deux scores prédits et `true_prs`. Aucun seuil n'est
+nécessaire pour produire le score continu. Un nouvel individu peut recevoir un
+score sans connaître son phénotype, à condition de fournir les mêmes SNPs dans
+le même ordre et avec le même codage allélique.
+
+## Comparaison des scores prédits avec `true_prs`
+
+RF et XGBoost produisent des probabilités entre 0 et 1, alors que `true_prs`
+peut être une somme pondérée sur une autre échelle. Nous comparons donc leurs
+relations et leurs classements avec **Pearson** (relation linéaire) et
+**Spearman** (relation entre les rangs). Nous ne calculons pas de RMSE entre
+ces quantités d'échelles potentiellement différentes.
+
+```{r correlations-true-prs}
+cor_sure <- function(a, b, methode) {
+  if (length(unique(a)) < 2L || length(unique(b)) < 2L) return(NA_real_)
+  cor(a, b, method = methode)
+}
+comparaison_prs <- data.frame(
+  Modele = c("Random Forest", "XGBoost"),
+  Pearson = c(cor_sure(S_rf, prs_test, "pearson"),
+              cor_sure(S_xgb, prs_test, "pearson")),
+  Spearman = c(cor_sure(S_rf, prs_test, "spearman"),
+               cor_sure(S_xgb, prs_test, "spearman"))
+)
+knitr::kable(comparaison_prs, digits = 4)
+write.csv(comparaison_prs, "comparaison_true_prs_test.csv", row.names = FALSE)
+```
+
+Une corrélation de Spearman proche de 1 indique des classements similaires ;
+elle ne prouve ni l'égalité des valeurs ni une bonne calibration. Une corrélation
+faible peut refléter une mauvaise reconstruction de l'information génétique,
+mais aussi une différence entre le score de référence et la cible phénotypique
+apprise. `NA` indique notamment un score constant dans le test.
+
+```{r graphiques-true-prs, fig.width=9, fig.height=4}
+local({
+  old_par <- par(mfrow = c(1, 2))
+  on.exit(par(old_par))
+  plot(prs_test, S_rf, pch = 16, col = adjustcolor("#2166AC", alpha.f = 0.4),
+       xlab = "true_prs", ylab = "Score RF", ylim = c(0, 1),
+       main = "Random Forest et true_prs")
+  plot(prs_test, S_xgb, pch = 16, col = adjustcolor("#D6604D", alpha.f = 0.4),
+       xlab = "true_prs", ylab = "Score XGBoost", ylim = c(0, 1),
+       main = "XGBoost et true_prs")
+})
+```
+
+Une tendance croissante est attendue si `true_prs` augmente avec le risque et si
+les modèles retrouvent cette information. La diagonale d'identité n'est pas une
+référence pertinente puisque les échelles peuvent différer.
+
+## Évaluation sur le test
+
+Nous évaluons la discrimination avec la ROC-AUC et la qualité des probabilités
+avec le score de Brier et la logloss. Une référence prédit la même probabilité
+pour tous : la proportion de cas observée dans l'apprentissage.
+
+```{r evaluation}
+evaluer <- function(observe, score) {
+  # Éviter log(0) pour la logloss uniquement.
+  p <- pmin(pmax(score, 1e-15), 1 - 1e-15)
+  roc_obj <- pROC::roc(
+    response = observe, predictor = score,
+    levels = c(0, 1), direction = "<", quiet = TRUE
+  )
+  data.frame(
+    ROC_AUC = as.numeric(pROC::auc(roc_obj)),
+    Brier = mean((score - observe)^2),
+    Logloss = -mean(observe * log(p) + (1 - observe) * log(1 - p))
+  )
+}
+
+# Convention à fixer d'après la construction du score, avant l'évaluation :
+# 1 si un true_prs élevé indique un risque élevé ; -1 dans le cas inverse.
+# Ne pas modifier ce signe pour améliorer artificiellement l'AUC du test.
+sens_prs <- 1
+stopifnot(sens_prs %in% c(-1, 1))
+prs_train_oriente <- sens_prs * prs_train
+prs_test_oriente <- sens_prs * prs_test
+roc_prs <- pROC::roc(y_test, prs_test_oriente,
+                     levels = c(0, 1), direction = "<", quiet = TRUE)
+
+S_reference <- rep(mean(y_train), length(y_test))
+performances <- rbind(
+  cbind(Modele = "Random Forest", evaluer(y_test, S_rf)),
+  cbind(Modele = "XGBoost", evaluer(y_test, S_xgb)),
+  cbind(Modele = "Probabilité constante", evaluer(y_test, S_reference)),
+  data.frame(Modele = "true_prs", ROC_AUC = as.numeric(pROC::auc(roc_prs)),
+             Brier = NA_real_, Logloss = NA_real_)
+)
+knitr::kable(performances, digits = 4)
+write.csv(performances, "performances_scores_test.csv", row.names = FALSE)
+```
+
+Pour `true_prs`, seule la ROC-AUC est calculée ici : Brier et logloss ne sont
+pas définis sur un score brut qui n'est pas une probabilité. Une transformation
+arbitraire en 0–1 ne suffirait pas à le calibrer.
+
+- **ROC-AUC :** plus élevée signifie une meilleure discrimination. Une valeur
+  proche de 0,5 correspond à un classement proche du hasard ; 1 à une séparation
+  parfaite dans ce test. L'orientation est fixée : une AUC inférieure à 0,5 reste visible.
+- **Brier :** plus faible signifie des probabilités globalement plus proches des
+  observations ; comparer avec la référence constante.
+- **Logloss :** plus faible est préférable ; elle pénalise fortement les erreurs
+  faites avec une grande confiance.
+
+Une meilleure AUC n'implique pas nécessairement un meilleur Brier. Nous ne
+connaissons pas les valeurs à l'avance et ne pouvons pas supposer qu'un modèle
+surpassera l'autre. Ce tableau ne fournit pas d'intervalles de confiance : de
+petites différences ne suffisent pas à établir une supériorité robuste.
+
+## Visualiser les résultats
+
+```{r distributions, fig.width=9, fig.height=4}
+local({
+  old_par <- par(mfrow = c(1, 2))
+  on.exit(par(old_par))
+  groupes <- factor(y_test, levels = c(0, 1), labels = c("Témoins", "Cas"))
+  boxplot(S_rf ~ groupes, ylim = c(0, 1), col = c("#BFD7EA", "#F0B7A4"),
+          ylab = "Score génétique", xlab = "", main = "Random Forest")
+  boxplot(S_xgb ~ groupes, ylim = c(0, 1), col = c("#BFD7EA", "#F0B7A4"),
+          ylab = "Score génétique", xlab = "", main = "XGBoost")
+})
+```
+
+Si le modèle discrimine les groupes, les cas devraient recevoir des scores
+plus élevés en moyenne. Un chevauchement est possible : il ne faut pas attendre
+une séparation parfaite pour une maladie complexe.
+
+```{r courbes-roc, fig.width=6, fig.height=5}
+roc_rf <- pROC::roc(y_test, S_rf, levels = c(0, 1), direction = "<", quiet = TRUE)
+roc_xgb <- pROC::roc(y_test, S_xgb, levels = c(0, 1), direction = "<", quiet = TRUE)
+plot(roc_rf, col = "#2166AC", lwd = 2, legacy.axes = TRUE,
+     main = "Discrimination sur le test")
+plot(roc_xgb, col = "#D6604D", lwd = 2, add = TRUE)
+plot(roc_prs, col = "#228833", lwd = 2, add = TRUE)
+legend("bottomright", legend = c("Random Forest", "XGBoost", "true_prs"),
+       col = c("#2166AC", "#D6604D", "#228833"), lwd = 2, bty = "n")
+```
+
+## Limites et conclusion à rédiger après exécution
+
+Ces modèles apprennent le statut cas/témoin à partir des SNPs. Leurs sorties
+peuvent être présentées comme des **scores génétiques non linéaires**. Dans une
+étude cas/témoins, la proportion de cas dépend de l'échantillonnage : les sorties
+ne sont pas automatiquement des risques absolus applicables à la population.
+Une étude de calibration et une validation indépendante sont nécessaires pour
+aller vers cette interprétation. Si les données sont simulées, les conclusions
+portent sur ce scénario de simulation.
+
+Pour le compte rendu, compléter après exécution :
+
+> Sur le jeu de test, Random Forest obtient une ROC-AUC de […] et un score de
+> Brier de […], contre […] et […] pour XGBoost. Ces résultats indiquent […].
+> La comparaison à la référence constante montre […]. Les conclusions restent
+> limitées par la taille du test, la sélection préalable des SNPs et l'origine
+> des données.
+
+Le test final ne doit pas être utilisé ensuite pour retoucher les modèles et
+présenter les mêmes performances comme une évaluation indépendante.
+
+## Reproductibilité
+
+```{r versions}
+sessionInfo()
+```
+
+Référence méthodologique pour le principe RF-GRS : Venkat et al. (2025),
+*Exploring Random Forest in Genetic Risk Score Construction*,
+[doi:10.1002/gepi.70022](https://doi.org/10.1002/gepi.70022).
+La branche XGBoost et les évaluations présentées ici sont une adaptation au projet.
+
+
+## Matrices de confusion finales : RF, XGBoost et true_prs
+
+Les trois matrices comparent une **classe prédite au phénotype réellement
+observé dans le test**. `true_prs` n'est pas la vérité de classe : il doit lui
+aussi être converti en prédiction binaire pour cette évaluation.
+
+Pour RF et XGBoost, nous fixons à l'avance le seuil de probabilité à **0,50**.
+Pour `true_prs`, qui n'est pas nécessairement une probabilité, nous choisissons
+sur l'apprentissage le seuil maximisant l'indice de Youden
+(sensibilité + spécificité − 1). En cas d'égalité, nous retenons la plus grande
+spécificité. Aucun seuil n'est optimisé sur le test.
+
+Ces politiques de seuil diffèrent : les matrices décrivent ces règles de
+décision et ne permettent pas, à elles seules, de conclure qu'un score est
+intrinsèquement supérieur. Les AUC comparent la discrimination sans seuil fixé.
+
+```{r seuils-confusion}
+seuil_rf <- 0.50
+seuil_xgb <- 0.50
+
+roc_prs_train <- pROC::roc(
+  y_train, prs_train_oriente, levels = c(0, 1),
+  direction = "<", quiet = TRUE
+)
+choix_seuil <- as.data.frame(pROC::coords(
+  roc_prs_train, x = "best", best.method = "youden",
+  ret = c("threshold", "sensitivity", "specificity"), transpose = FALSE
+))
+choix_seuil <- choix_seuil[order(-choix_seuil$specificity,
+                                choix_seuil$threshold), , drop = FALSE]
+seuil_prs <- choix_seuil$threshold[1]
+
+seuils <- data.frame(
+  Score = c("RF", "XGBoost", "true_prs orienté"),
+  Seuil = c(seuil_rf, seuil_xgb, seuil_prs),
+  Regle = c("S_RF >= seuil", "S_XGBoost >= seuil",
+            "sens_prs * true_prs >= seuil")
+)
+knitr::kable(seuils, digits = 4)
+write.csv(seuils, "seuils_classification.csv", row.names = FALSE)
+
+# Les niveaux sont explicites, y compris si aucune prédiction n'est positive.
+reference_test <- factor(y_test, levels = c(0, 1))
+classe_rf <- factor(as.integer(S_rf >= seuil_rf), levels = c(0, 1))
+classe_xgb <- factor(as.integer(S_xgb >= seuil_xgb), levels = c(0, 1))
+classe_prs <- factor(as.integer(prs_test_oriente >= seuil_prs), levels = c(0, 1))
+
+cm_rf <- caret::confusionMatrix(classe_rf, reference_test, positive = "1")
+cm_xgb <- caret::confusionMatrix(classe_xgb, reference_test, positive = "1")
+cm_prs <- caret::confusionMatrix(classe_prs, reference_test, positive = "1")
+```
+
+### Random Forest
+
+```{r confusion-rf}
+cm_rf
+```
+
+### XGBoost
+
+```{r confusion-xgboost}
+cm_xgb
+```
+
+### true_prs
+
+```{r confusion-true-prs}
+cm_prs
+```
+
+Dans ces matrices, **les lignes sont les prédictions et les colonnes la
+référence observée**. La classe positive est 1 (cas de lupus).
+
+| Prédiction | Référence 0 | Référence 1 |
+|---|---|---|
+| 0 | Vrai négatif | Faux négatif |
+| 1 | Faux positif | Vrai positif |
+
+La sensibilité mesure la proportion de cas détectés ; la spécificité mesure
+la proportion de témoins correctement classés. La précision positive mesure
+la proportion de cas réels parmi les prédictions positives. Certaines métriques
+peuvent être indéfinies si aucune prédiction n'est positive. Dans un échantillon
+avec 75 % de témoins, une accuracy de 75 % peut simplement correspondre à
+prédire toujours « témoin » : examiner aussi la sensibilité et la balanced accuracy.
+
+```{r synthese-confusions}
+resumer_cm <- function(cm, nom) {
+  data.frame(
+    Score = nom,
+    Accuracy = unname(cm$overall["Accuracy"]),
+    Sensibilite = unname(cm$byClass["Sensitivity"]),
+    Specificite = unname(cm$byClass["Specificity"]),
+    Precision_positive = unname(cm$byClass["Pos Pred Value"]),
+    Balanced_accuracy = unname(cm$byClass["Balanced Accuracy"])
+  )
+}
+synthese_confusions <- rbind(
+  resumer_cm(cm_rf, "RF"), resumer_cm(cm_xgb, "XGBoost"),
+  resumer_cm(cm_prs, "true_prs")
+)
+knitr::kable(synthese_confusions, digits = 4)
+write.csv(synthese_confusions, "synthese_confusions_test.csv", row.names = FALSE)
+write.csv(as.matrix(cm_rf$table), "matrice_confusion_RF.csv")
+write.csv(as.matrix(cm_xgb$table), "matrice_confusion_XGBoost.csv")
+write.csv(as.matrix(cm_prs$table), "matrice_confusion_true_prs.csv")
+
+# Export final : scores et classes des trois approches, identifiants conservés.
+resultats$classe_RF <- as.integer(as.character(classe_rf))
+resultats$classe_XGBoost <- as.integer(as.character(classe_xgb))
+resultats$classe_true_prs <- as.integer(as.character(classe_prs))
+write.csv(resultats, "scores_genetiques_test.csv", row.names = FALSE)
+```

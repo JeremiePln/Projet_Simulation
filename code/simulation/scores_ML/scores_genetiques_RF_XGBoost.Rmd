@@ -37,7 +37,7 @@ ci-dessous dans la console si nécessaire.
 
 ```{r packages}
 # À exécuter une seule fois dans la console si nécessaire :
-# install.packages(c("ranger", "xgboost", "caret", "pROC", "rmarkdown", "knitr"))
+install.packages(c("ranger", "xgboost", "caret", "pROC", "rmarkdown", "knitr"))
 
 library(ranger)
 library(xgboost)
